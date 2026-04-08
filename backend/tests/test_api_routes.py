@@ -12,17 +12,20 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
 from app.main import app
 from app.models.event_models import ServiceEvent, ServiceEventAction
 from app.models.master_models import Compressor, IssueCategory, Site
 
-
 @pytest.fixture(scope="module")
 def test_engine():
+    # StaticPool keeps a single in-memory SQLite DB visible across connections.
     engine = create_engine(
-        "sqlite:///:memory:", connect_args={"check_same_thread": False},
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     Base.metadata.create_all(bind=engine)
     return engine
@@ -76,6 +79,14 @@ def seeded_data(db_session):
         status="active",
     )
     db_session.add(comp)
+    comp2 = Compressor(
+        unit_id=f"MC2{tag}",
+        equipment_number="500100",
+        compressor_type="reciprocating",
+        site_id=site.id,
+        status="active",
+    )
+    db_session.add(comp2)
     db_session.flush()
 
     cat = IssueCategory(name=f"detonation_{tag}", severity_default="high")
@@ -108,6 +119,21 @@ def seeded_data(db_session):
         db_session.flush()
         events.append(event)
 
+    ev2 = ServiceEvent(
+        compressor_id=comp2.id,
+        order_number=f"ORD-2-{tag}",
+        order_description="PM site B",
+        event_date=today - timedelta(days=10),
+        event_category="preventive_maintenance",
+        maintenance_activity_type="preventive_maintenance",
+        technician_notes_raw="PM",
+        order_status="TECO",
+        order_cost=900.0,
+        issue_category_id=None,
+    )
+    db_session.add(ev2)
+    db_session.flush()
+
     db_session.add(ServiceEventAction(
         service_event_id=events[0].id,
         action_type_raw="replaced",
@@ -116,7 +142,14 @@ def seeded_data(db_session):
     ))
     db_session.flush()
 
-    return {"comp": comp, "events": events, "site": site, "tag": tag, "cat": cat}
+    return {
+        "comp": comp,
+        "comp2": comp2,
+        "events": events,
+        "site": site,
+        "tag": tag,
+        "cat": cat,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -184,6 +217,15 @@ class TestServiceEventRoutes:
         assert "total" in data
         assert data["page"] == 1
 
+    def test_list_events_with_event_id_filter(self, client, seeded_data):
+        event_id = seeded_data["events"][0].id
+        r = client.get("/api/service-events/", params={"event_id": event_id})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        assert data["items"][0]["id"] == event_id
+
     def test_list_events_with_category_filter(self, client, seeded_data):
         r = client.get("/api/service-events/", params={"event_category": "corrective"})
         assert r.status_code == 200
@@ -232,6 +274,20 @@ class TestDashboardRoutes:
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, list)
+
+    def test_recent_events_secondary_sort(self, client, seeded_data):
+        r = client.get(
+            "/api/dashboard/recent-events",
+            params={
+                "limit": 5,
+                "sort_by": "severity",
+                "order": "desc",
+                "secondary_sort_by": "event_date",
+                "secondary_order": "desc",
+            },
+        )
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
 
     def test_recurring_issues(self, client, seeded_data):
         r = client.get("/api/dashboard/recurring-issues")
@@ -330,3 +386,108 @@ class TestFeedbackRoutes:
         assert r.status_code == 200
         data = r.json()
         assert isinstance(data, list)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Work orders & technicians
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestWorkOrders:
+    def test_list_technicians(self, client):
+        r = client.get("/api/technicians/")
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+
+    def test_create_and_list_work_order(self, client, seeded_data):
+        comp_id = seeded_data["comp"].id
+        r = client.post(
+            "/api/work-orders/",
+            json={
+                "compressor_id": comp_id,
+                "title": "Field test — seal inspection",
+                "source": "ad_hoc",
+                "issue_category": "oil_leak",
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["title"] == "Field test — seal inspection"
+        assert data["compressor_id"] == comp_id
+        assert len(data["steps"]) >= 1
+
+        r2 = client.get("/api/work-orders/")
+        assert r2.status_code == 200
+        assert any(row["id"] == data["id"] for row in r2.json())
+
+        step_id = data["steps"][0]["id"]
+        r3 = client.patch(
+            f"/api/work-orders/{data['id']}/steps/{step_id}",
+            json={"is_completed": True},
+        )
+        assert r3.status_code == 200
+        assert r3.json()["is_completed"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fleet analytics
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestFleetAnalyticsRoutes:
+    def test_fleet_overview(self, client, seeded_data):
+        r = client.get("/api/analytics/fleet/overview")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["granularity"] == "month"
+        assert "cost_series" in data
+        assert data["total_maintenance_cost"] > 0
+        assert "corrective_cost" in data
+        assert "preventive_cost" in data
+        assert "fleet_aging_series" in data
+        assert "fleet_run_hours_snapshot" in data
+
+    def test_fleet_entities_compressors(self, client, seeded_data):
+        r = client.get("/api/analytics/fleet/entities", params={"kind": "compressor"})
+        assert r.status_code == 200
+        rows = r.json()
+        assert len(rows) >= 2
+        ids = {row["id"] for row in rows}
+        assert seeded_data["comp"].id in ids
+        assert seeded_data["comp2"].id in ids
+
+    def test_fleet_entities_sites(self, client, seeded_data):
+        r = client.get("/api/analytics/fleet/entities", params={"kind": "site"})
+        assert r.status_code == 200
+        assert any(row["id"] == seeded_data["site"].id for row in r.json())
+
+    def test_fleet_compare_two_compressors(self, client, seeded_data):
+        c1 = seeded_data["comp"].id
+        c2 = seeded_data["comp2"].id
+        r = client.get(
+            "/api/analytics/fleet/compare",
+            params=[
+                ("entity_type", "compressor"),
+                ("entity_ids", c1),
+                ("entity_ids", c2),
+                ("date_from", str(date.today() - timedelta(days=400))),
+                ("date_to", str(date.today())),
+            ],
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["entity_type"] == "compressor"
+        assert len(data["entities"]) == 2
+        labels = {e["label"] for e in data["entities"]}
+        assert len(labels) == 2
+
+    def test_fleet_compare_rejects_single_id(self, client, seeded_data):
+        r = client.get(
+            "/api/analytics/fleet/compare",
+            params={
+                "entity_type": "compressor",
+                "entity_ids": seeded_data["comp"].id,
+                "date_from": str(date.today() - timedelta(days=30)),
+                "date_to": str(date.today()),
+            },
+        )
+        assert r.status_code == 422

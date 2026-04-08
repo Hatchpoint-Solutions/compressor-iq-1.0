@@ -2,22 +2,29 @@
 
 Ties together:
   Layer 1: analytics_service    — frequency analysis, recurrence detection
-  Layer 2: rules_engine         — issue inference, action mapping
+  Layer 2: rules_engine         — issue inference, action mapping (fallback)
   Layer 3: similarity_service   — similar case retrieval
-  Layer 4: workflow_service     — prescriptive workflow generation
+  Layer 4: workflow_service     — prescriptive workflow generation (fallback)
   Layer 5: confidence_service   — multi-factor confidence scoring
-  Layer 5b: explanation_service — evidence-based explanations
+  Layer 5b: explanation_service — evidence-based explanations (fallback)
+  LLM:     llm_service          — OpenAI-powered diagnosis, workflows, explanations
+
+When OPENAI_API_KEY is configured, Layers 2/4/5b are replaced by the LLM
+service.  If the LLM call fails for any reason, we fall back transparently
+to the rule-based engine.
 
 This module is the single entry point called by the API routes.
 """
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.analytics_models import Recommendation, SimilarCase, WorkflowStep
 from app.models.event_models import ServiceEvent, ServiceEventAction
 from app.models.master_models import Compressor, IssueCategory
@@ -53,6 +60,8 @@ from app.services.intelligence.similarity_service import (
 )
 from app.services.intelligence.workflow_service import generate_workflow
 
+logger = logging.getLogger(__name__)
+
 
 def generate_recommendation(
     event: ServiceEvent,
@@ -62,50 +71,27 @@ def generate_recommendation(
 ) -> Recommendation:
     """Generate a full recommendation for a service event.
 
-    This is the main entry point for the intelligence engine.  It
-    runs all 6 layers and persists the result.
+    This is the main entry point for the intelligence engine.  It runs
+    the data layers (analytics, similarity, confidence), then delegates
+    diagnosis/workflow/explanation to the LLM when available or falls
+    back to the rule-based engine.
     """
     compressor = db.query(Compressor).filter(Compressor.id == event.compressor_id).first()
     unit_id = compressor.unit_id if compressor else event.compressor_id
 
-    # ── Layer 1: Descriptive analytics ────────────────────────────────
+    notes_text = current_notes or event.technician_notes_raw
+    desc_text = current_description or event.order_description
+
+    # ── Layer 1: Descriptive analytics (always runs) ──────────────────
     recurrence_signals = detect_recurrence_signals(db, event.compressor_id)
     c30, c90 = get_recent_event_counts(db, event.compressor_id)
     avg_interval = compute_avg_days_between_events(db, event.compressor_id)
     resolution_rate = compute_resolution_rate(db, compressor_id=event.compressor_id)
+    action_freqs = get_action_frequencies_for_machine(db, event.compressor_id, limit=7)
 
-    # ── Layer 2: Issue inference ──────────────────────────────────────
-    notes_text = current_notes or event.technician_notes_raw
-    desc_text = current_description or event.order_description
-
-    action_type_raws = [a.action_type_raw for a in event.actions if a.action_type_raw]
-
-    issue_result = infer_issue_category(
-        notes=notes_text,
-        description=desc_text,
-        event_category=event.event_category,
-        action_types=action_type_raws,
-    )
-
-    # Resolve issue_category_id from the database
-    issue_category_id = event.issue_category_id
-    issue_cat_name = issue_result.category_name
-    issue_cat_label = issue_result.category_label
-
-    if not issue_category_id and issue_cat_name != "unknown":
-        cat_row = db.query(IssueCategory).filter(IssueCategory.name == issue_cat_name).first()
-        if cat_row:
-            issue_category_id = cat_row.id
-    elif issue_category_id:
-        cat_row = db.query(IssueCategory).filter(IssueCategory.id == issue_category_id).first()
-        if cat_row:
-            issue_cat_name = cat_row.name
-            issue_cat_label = cat_row.name.replace("_", " ").title()
-
-    # ── Layer 3: Similar case retrieval ───────────────────────────────
+    # ── Layer 3: Similar case retrieval (always runs) ─────────────────
     similar_cases: list[SimilarCaseResult] = find_similar_cases(event, db, limit=15)
 
-    # Determine most frequent action from similar cases
     similar_event_ids = [sc.event.id for sc in similar_cases]
     frequent_actions = _determine_frequent_actions(similar_event_ids, db)
 
@@ -121,17 +107,32 @@ def generate_recommendation(
         top_action_code = normalized.code if normalized.code != "unknown" else raw_action
         top_action_label = normalized.label if normalized.code != "unknown" else raw_action
 
-    # Determine recommended action: prefer data-driven, fall back to rules
-    recommended_action_label = top_action_label
-    if not recommended_action_label or top_action_freq < 0.3:
-        rule_action = get_primary_action_for_issue(issue_cat_name)
-        if rule_action:
-            recommended_action_label = rule_action.action_label
-
-    # Infer suggested parts/checks from similar case actions
     suggested_parts = _infer_suggested_parts(similar_event_ids, db)
 
-    # ── Layer 5: Confidence scoring ───────────────────────────────────
+    # ── Layer 2: Issue inference (rule-based — needed for confidence) ─
+    action_type_raws = [a.action_type_raw for a in event.actions if a.action_type_raw]
+    issue_result = infer_issue_category(
+        notes=notes_text,
+        description=desc_text,
+        event_category=event.event_category,
+        action_types=action_type_raws,
+    )
+
+    issue_category_id = event.issue_category_id
+    issue_cat_name = issue_result.category_name
+    issue_cat_label = issue_result.category_label
+
+    if not issue_category_id and issue_cat_name != "unknown":
+        cat_row = db.query(IssueCategory).filter(IssueCategory.name == issue_cat_name).first()
+        if cat_row:
+            issue_category_id = cat_row.id
+    elif issue_category_id:
+        cat_row = db.query(IssueCategory).filter(IssueCategory.id == issue_category_id).first()
+        if cat_row:
+            issue_cat_name = cat_row.name
+            issue_cat_label = cat_row.name.replace("_", " ").title()
+
+    # ── Layer 5: Confidence scoring (always runs — auditable math) ────
     data_completeness = compute_data_completeness(
         has_notes=bool(notes_text),
         has_description=bool(desc_text),
@@ -151,7 +152,6 @@ def generate_recommendation(
         resolution_rate=resolution_rate,
     )
 
-    # ── Layer 5b: Explanation generation ──────────────────────────────
     recurrence_dicts = [
         {
             "signal_type": rs.signal_type,
@@ -161,6 +161,229 @@ def generate_recommendation(
         }
         for rs in recurrence_signals
     ]
+
+    evidence_summary = build_evidence_summary_dict(
+        similar_case_count=len(similar_cases),
+        top_action=top_action_code,
+        top_action_label=top_action_label,
+        top_action_frequency=top_action_freq,
+        resolution_rate=resolution_rate,
+        recent_event_count_30d=c30,
+        recent_event_count_90d=c90,
+        recurrence_signal_count=len(recurrence_signals),
+        avg_days_between_events=avg_interval,
+    )
+
+    # ── LLM path (or fallback to rule-based) ──────────────────────────
+    llm_result = None
+    if settings.llm_enabled:
+        llm_result = _try_llm_recommendation(
+            event=event,
+            unit_id=unit_id,
+            compressor=compressor,
+            notes_text=notes_text,
+            desc_text=desc_text,
+            recurrence_dicts=recurrence_dicts,
+            action_freqs=action_freqs,
+            similar_cases=similar_cases,
+            confidence_result=confidence_result,
+            c30=c30,
+            c90=c90,
+            avg_interval=avg_interval,
+            resolution_rate=resolution_rate,
+        )
+
+    if llm_result is not None:
+        # LLM succeeded — use its diagnosis, workflow, and explanation
+        explanation_text = llm_result.explanation
+        recommended_action_label = llm_result.recommended_action
+        fallback_note = None
+
+        # Override issue category if LLM provided one
+        if llm_result.diagnosis.issue_category:
+            issue_cat_name = llm_result.diagnosis.issue_category
+            issue_cat_label = llm_result.diagnosis.issue_label or issue_cat_label
+            cat_row = db.query(IssueCategory).filter(
+                IssueCategory.name == issue_cat_name,
+            ).first()
+            if cat_row:
+                issue_category_id = cat_row.id
+
+        workflow_steps_data = [
+            (s.step_number, s.instruction, s.rationale, s.required_evidence)
+            for s in llm_result.workflow_steps
+        ]
+    else:
+        # Fallback: use the existing rule-based engine
+        explanation_text, recommended_action_label, fallback_note, workflow_steps_data = (
+            _rule_based_recommendation(
+                issue_cat_name=issue_cat_name,
+                issue_cat_label=issue_cat_label,
+                unit_id=unit_id,
+                top_action_code=top_action_code,
+                top_action_label=top_action_label,
+                top_action_freq=top_action_freq,
+                resolution_rate=resolution_rate,
+                recurrence_dicts=recurrence_dicts,
+                recurrence_signals=recurrence_signals,
+                c30=c30,
+                c90=c90,
+                avg_interval=avg_interval,
+                similar_cases=similar_cases,
+                issue_result=issue_result,
+                confidence_result=confidence_result,
+                compressor=compressor,
+            )
+        )
+
+    # ── Persist ───────────────────────────────────────────────────────
+    rec = Recommendation(
+        service_event_id=event.id,
+        compressor_id=event.compressor_id,
+        issue_category_id=issue_category_id,
+        likely_issue_category=issue_cat_name if issue_cat_name != "unknown" else None,
+        recommended_action=recommended_action_label,
+        confidence_score=confidence_result.score,
+        confidence_label=confidence_result.label,
+        reasoning=explanation_text,
+        evidence_summary=evidence_summary,
+        recurrence_signals=recurrence_dicts if recurrence_dicts else None,
+        suggested_parts_or_checks=suggested_parts if suggested_parts else None,
+        similar_case_count=len(similar_cases),
+        most_frequent_action=top_action_label,
+        resolution_rate=resolution_rate,
+        fallback_note=fallback_note,
+        status="pending",
+    )
+    db.add(rec)
+    db.flush()
+
+    for sc in similar_cases[:10]:
+        db.add(SimilarCase(
+            recommendation_id=rec.id,
+            service_event_id=sc.event.id,
+            similarity_score=sc.similarity_score,
+            match_reason="; ".join(sc.match_reasons),
+        ))
+
+    for step_num, instruction, rationale, evidence in workflow_steps_data:
+        db.add(WorkflowStep(
+            recommendation_id=rec.id,
+            step_number=step_num,
+            instruction=instruction,
+            rationale=rationale,
+            required_evidence=evidence,
+        ))
+
+    db.commit()
+    return rec
+
+
+# ── LLM integration ──────────────────────────────────────────────────────
+
+def _try_llm_recommendation(
+    event: ServiceEvent,
+    unit_id: str,
+    compressor: Compressor | None,
+    notes_text: str | None,
+    desc_text: str | None,
+    recurrence_dicts: list[dict],
+    action_freqs: list,
+    similar_cases: list[SimilarCaseResult],
+    confidence_result,
+    c30: int,
+    c90: int,
+    avg_interval: float | None,
+    resolution_rate: float | None,
+):
+    """Attempt to generate a recommendation via the LLM.
+
+    Returns an LLMRecommendation on success, or None on any failure.
+    """
+    try:
+        from app.services.intelligence.llm_service import (
+            LLMContext,
+            generate_llm_recommendation,
+        )
+
+        similar_case_dicts = [
+            {
+                "similarity_score": sc.similarity_score,
+                "event_date": str(sc.event_date) if sc.event_date else None,
+                "event_category": sc.event_category,
+                "action_summary": sc.action_summary,
+                "resolution_status": sc.resolution_status,
+                "match_reasons": "; ".join(sc.match_reasons),
+            }
+            for sc in similar_cases[:8]
+        ]
+
+        action_freq_dicts = [
+            {
+                "action_type": af.action_type,
+                "count": af.count,
+                "percentage": af.percentage,
+            }
+            for af in action_freqs[:7]
+        ]
+
+        ctx = LLMContext(
+            unit_id=unit_id,
+            compressor_type=compressor.compressor_type if compressor else None,
+            event_date=str(event.event_date) if event.event_date else None,
+            event_category=event.event_category,
+            order_description=desc_text,
+            technician_notes=notes_text,
+            run_hours=event.run_hours_at_event,
+            order_cost=event.order_cost,
+            recent_event_count_30d=c30,
+            recent_event_count_90d=c90,
+            avg_days_between_events=avg_interval,
+            recurrence_signals=recurrence_dicts,
+            action_frequencies=action_freq_dicts,
+            similar_cases=similar_case_dicts,
+            confidence_score=confidence_result.score,
+            confidence_label=confidence_result.label,
+            resolution_rate=resolution_rate,
+        )
+
+        return generate_llm_recommendation(ctx)
+
+    except Exception:
+        logger.exception("LLM recommendation failed — falling back to rule-based engine")
+        return None
+
+
+# ── Rule-based fallback (original logic, extracted) ───────────────────────
+
+def _rule_based_recommendation(
+    issue_cat_name: str,
+    issue_cat_label: str,
+    unit_id: str,
+    top_action_code: str | None,
+    top_action_label: str | None,
+    top_action_freq: float,
+    resolution_rate: float | None,
+    recurrence_dicts: list[dict],
+    recurrence_signals: list,
+    c30: int,
+    c90: int,
+    avg_interval: float | None,
+    similar_cases: list[SimilarCaseResult],
+    issue_result,
+    confidence_result,
+    compressor: Compressor | None,
+) -> tuple[str, str | None, str | None, list[tuple[int, str, str, str | None]]]:
+    """Run the original rule-based layers 2/4/5b and return their outputs.
+
+    Returns (explanation_text, recommended_action, fallback_note, workflow_steps).
+    workflow_steps is a list of (step_number, instruction, rationale, evidence).
+    """
+    recommended_action_label = top_action_label
+    if not recommended_action_label or top_action_freq < 0.3:
+        rule_action = get_primary_action_for_issue(issue_cat_name)
+        if rule_action:
+            recommended_action_label = rule_action.action_label
 
     evidence_pkg = EvidencePackage(
         machine_unit_id=unit_id,
@@ -189,19 +412,6 @@ def generate_recommendation(
         has_issue_category=issue_cat_name != "unknown",
     )
 
-    evidence_summary = build_evidence_summary_dict(
-        similar_case_count=len(similar_cases),
-        top_action=top_action_code,
-        top_action_label=top_action_label,
-        top_action_frequency=top_action_freq,
-        resolution_rate=resolution_rate,
-        recent_event_count_30d=c30,
-        recent_event_count_90d=c90,
-        recurrence_signal_count=len(recurrence_signals),
-        avg_days_between_events=avg_interval,
-    )
-
-    # ── Layer 4: Workflow generation ──────────────────────────────────
     has_recurrence = len(recurrence_signals) > 0
     recurrence_desc = recurrence_signals[0].description if recurrence_signals else None
 
@@ -212,49 +422,12 @@ def generate_recommendation(
         confidence_label=confidence_result.label,
     )
 
-    # ── Persist ───────────────────────────────────────────────────────
-    rec = Recommendation(
-        service_event_id=event.id,
-        compressor_id=event.compressor_id,
-        issue_category_id=issue_category_id,
-        likely_issue_category=issue_cat_name if issue_cat_name != "unknown" else None,
-        recommended_action=recommended_action_label,
-        confidence_score=confidence_result.score,
-        confidence_label=confidence_result.label,
-        reasoning=explanation_text,
-        evidence_summary=evidence_summary,
-        recurrence_signals=recurrence_dicts if recurrence_dicts else None,
-        suggested_parts_or_checks=suggested_parts if suggested_parts else None,
-        similar_case_count=len(similar_cases),
-        most_frequent_action=top_action_label,
-        resolution_rate=resolution_rate,
-        fallback_note=fallback_note,
-        status="pending",
-    )
-    db.add(rec)
-    db.flush()
+    workflow_steps_data = [
+        (step.step_number, step.instruction, step.rationale, step.required_evidence)
+        for step in workflow.steps
+    ]
 
-    # Persist similar cases
-    for sc in similar_cases[:10]:
-        db.add(SimilarCase(
-            recommendation_id=rec.id,
-            service_event_id=sc.event.id,
-            similarity_score=sc.similarity_score,
-            match_reason="; ".join(sc.match_reasons),
-        ))
-
-    # Persist workflow steps
-    for step in workflow.steps:
-        db.add(WorkflowStep(
-            recommendation_id=rec.id,
-            step_number=step.step_number,
-            instruction=step.instruction,
-            rationale=step.rationale,
-            required_evidence=step.required_evidence,
-        ))
-
-    db.commit()
-    return rec
+    return explanation_text, recommended_action_label, fallback_note, workflow_steps_data
 
 
 def generate_recommendation_for_machine(

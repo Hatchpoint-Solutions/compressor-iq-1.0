@@ -18,6 +18,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.deps import verify_api_key_if_configured
 from app.models.import_models import (
     ImportBatch,
     ImportFile,
@@ -41,7 +42,11 @@ from app.schemas.common import PaginatedResponse
 router = APIRouter(prefix="/api/imports", tags=["imports"])
 
 
-@router.post("/run", response_model=ImportRunResponse)
+@router.post(
+    "/run",
+    response_model=ImportRunResponse,
+    dependencies=[Depends(verify_api_key_if_configured)],
+)
 def run_import(body: ImportRunRequest, db: Session = Depends(get_db)):
     """Trigger a new import. Scans for files and processes them."""
     from app.services.ingestion.import_service import run_import as _run

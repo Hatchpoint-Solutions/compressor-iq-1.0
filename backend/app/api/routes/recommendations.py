@@ -3,13 +3,16 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
+from app.core.deps import verify_api_key_if_configured
 from app.models.analytics_models import Recommendation, WorkflowStep
 from app.models.event_models import ServiceEvent
 from app.models.master_models import Compressor
 from app.schemas.recommendation_schemas import (
+    HealthAssessmentResponse,
     RecommendationGenerateRequest,
     RecommendationListItem,
     RecommendationResponse,
@@ -20,8 +23,14 @@ from app.schemas.recommendation_schemas import (
 
 router = APIRouter(prefix="/api/recommendations", tags=["recommendations"])
 
+_MUTATE = [Depends(verify_api_key_if_configured)]
 
-@router.post("/generate/{event_id}", response_model=RecommendationResponse)
+
+@router.post(
+    "/generate/{event_id}",
+    response_model=RecommendationResponse,
+    dependencies=_MUTATE,
+)
 def generate_recommendation_for_event(
     event_id: str,
     body: RecommendationGenerateRequest | None = None,
@@ -42,7 +51,7 @@ def generate_recommendation_for_event(
     return _load_full_recommendation(rec.id, db)
 
 
-@router.post("/generate", response_model=RecommendationResponse)
+@router.post("/generate", response_model=RecommendationResponse, dependencies=_MUTATE)
 def generate_recommendation_general(
     body: RecommendationGenerateRequest,
     db: Session = Depends(get_db),
@@ -120,7 +129,11 @@ def get_recommendation(recommendation_id: str, db: Session = Depends(get_db)):
     return rec
 
 
-@router.put("/{recommendation_id}/status", response_model=StatusUpdateResponse)
+@router.put(
+    "/{recommendation_id}/status",
+    response_model=StatusUpdateResponse,
+    dependencies=_MUTATE,
+)
 def update_status(
     recommendation_id: str,
     status: str = Query(...),
@@ -140,7 +153,11 @@ def update_status(
     return StatusUpdateResponse(id=rec.id, status=rec.status)
 
 
-@router.put("/workflow-step/{step_id}", response_model=WorkflowStepResponse)
+@router.put(
+    "/workflow-step/{step_id}",
+    response_model=WorkflowStepResponse,
+    dependencies=_MUTATE,
+)
 def update_workflow_step(
     step_id: str,
     body: WorkflowStepUpdateRequest,
@@ -160,6 +177,28 @@ def update_workflow_step(
     db.commit()
     db.refresh(step)
     return step
+
+
+@router.post(
+    "/assess/{compressor_id}",
+    response_model=HealthAssessmentResponse,
+    dependencies=_MUTATE,
+)
+def assess_compressor_health(compressor_id: str, db: Session = Depends(get_db)):
+    """Generate a proactive health assessment for a compressor.
+
+    Gathers the latest operational data, maintenance history, and
+    recurrence patterns, then uses OpenAI (with rule-based fallback)
+    to produce actionable recommendations for the operator.
+    """
+    compressor = db.query(Compressor).filter(Compressor.id == compressor_id).first()
+    if not compressor:
+        compressor = db.query(Compressor).filter(Compressor.unit_id == compressor_id).first()
+    if not compressor:
+        raise HTTPException(status_code=404, detail="Compressor not found")
+
+    from app.services.health_assessment import generate_health_assessment
+    return generate_health_assessment(compressor, db)
 
 
 def _load_full_recommendation(rec_id: str, db: Session) -> Recommendation | None:
