@@ -1,25 +1,73 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8001";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
+/** Default request timeout (ms). Prevents the UI from hanging indefinitely if the API is down or unreachable. */
+const DEFAULT_FETCH_TIMEOUT_MS = Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS) || 45_000;
 
-async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
-  });
+function authHeaders(): Record<string, string> {
+  return API_KEY ? { "X-API-Key": API_KEY } : {};
+}
+
+type FetchAPIOptions = RequestInit & { timeoutMs?: number };
+
+async function fetchAPI<T>(path: string, options?: FetchAPIOptions): Promise<T> {
+  const { timeoutMs: timeoutOverride, ...rest } = options ?? {};
+  const timeoutMs = timeoutOverride ?? DEFAULT_FETCH_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...rest,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+        ...rest.headers,
+      },
+    });
+  } catch (e: unknown) {
+    const name = e && typeof e === "object" && "name" in e ? String((e as { name: string }).name) : "";
+    if (name === "AbortError") {
+      throw new Error(
+        `Request timed out after ${Math.round(timeoutMs / 1000)}s (${API_BASE}). Is the API running and NEXT_PUBLIC_API_URL correct?`
+      );
+    }
+    throw new Error(
+      e instanceof Error
+        ? `${e.message} (${API_BASE})`
+        : `Network error (${API_BASE})`
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
   if (!res.ok) {
     const detail = await res.text();
     throw new Error(`API error ${res.status}: ${detail}`);
   }
-  return res.json();
+  const text = await res.text();
+  if (!text) {
+    return undefined as T;
+  }
+  return JSON.parse(text) as T;
 }
 
 // ── Shared types ────────────────────────────────────────────────────────
 
+export interface CompressorDropdownItem {
+  id: string;
+  unit_id: string;
+  status: string;
+  current_run_hours: number | null;
+  equipment_number: string | null;
+  compressor_type: string | null;
+}
+
 export interface DashboardSummary {
   total_events: number;
   total_compressors: number;
+  total_fleet_run_hours: number;
   recent_events_count: number;
   corrective_count: number;
   preventive_count: number;
@@ -32,6 +80,32 @@ export interface DashboardSummary {
     last_event_category: string | null;
     last_event_date: string | null;
   }[];
+  compressors: CompressorDropdownItem[];
+}
+
+export interface HealthAlertItem {
+  severity: string;
+  title: string;
+  description: string;
+  recommended_action: string;
+}
+
+export interface HealthAssessment {
+  compressor_id: string;
+  unit_id: string;
+  overall_health: string;
+  health_score: number;
+  summary: string;
+  alerts: HealthAlertItem[];
+  recent_event_count_30d: number;
+  recent_event_count_90d: number;
+  total_events: number;
+  current_run_hours: number | null;
+  last_service_date: string | null;
+  top_issues: string[];
+  ai_powered: boolean;
+  assessed_at: string | null;
+  work_orders_created?: string[];
 }
 
 export interface ServiceEvent {
@@ -48,6 +122,32 @@ export interface ServiceEvent {
   order_cost: number | null;
   plant_code: string | null;
   customer_name: string | null;
+}
+
+/** Dashboard fleet table row — includes derived sort/display fields from the API. */
+export interface DashboardServiceEvent extends ServiceEvent {
+  issue_severity: string | null;
+  criticality_rank: number;
+  primary_technician_name: string | null;
+  manager_name: string | null;
+}
+
+export type FleetEventSortField =
+  | "event_date"
+  | "severity"
+  | "criticality"
+  | "technician"
+  | "manager";
+
+export interface TechnicianListItem {
+  id: string;
+  name: string;
+  event_count: number;
+}
+
+export interface ManagerListItem {
+  id: string;
+  name: string;
 }
 
 export interface ServiceEventDetail extends ServiceEvent {
@@ -253,13 +353,156 @@ export interface FeedbackResponse {
   created_at: string | null;
 }
 
+// ── Work orders ─────────────────────────────────────────────────────────
+
+export interface WorkOrderStep {
+  id: string;
+  work_order_id: string;
+  step_number: number;
+  instruction: string;
+  rationale: string | null;
+  required_evidence: string | null;
+  is_completed: boolean;
+  completed_at: string | null;
+  notes: string | null;
+}
+
+export interface WorkOrderListItem {
+  id: string;
+  title: string;
+  description: string | null;
+  compressor_id: string;
+  unit_id: string;
+  source: string;
+  status: string;
+  assigned_technician_id: string | null;
+  assigned_technician_name: string | null;
+  recommendation_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  completed_at: string | null;
+}
+
+export interface WorkOrderDetail extends WorkOrderListItem {
+  steps: WorkOrderStep[];
+}
+
+export interface WorkOrderCreatePayload {
+  compressor_id: string;
+  title: string;
+  description?: string | null;
+  source?: string;
+  recommendation_id?: string | null;
+  issue_category?: string | null;
+  assigned_technician_id?: string | null;
+}
+
+export interface WorkOrderUpdatePayload {
+  status?: string;
+  assigned_technician_id?: string | null;
+  clear_assigned_technician?: boolean;
+  title?: string;
+  description?: string | null;
+}
+
+// ── Fleet analytics ─────────────────────────────────────────────────────
+
+export interface FleetCostPeriodPoint {
+  period: string;
+  total_cost: number;
+  event_count: number;
+}
+
+export interface FleetAgingPoint {
+  period: string;
+  avg_run_hours_at_service: number | null;
+  events_with_run_hours: number;
+}
+
+export interface FleetRunHoursSnapshot {
+  compressor_count: number;
+  avg_current_run_hours: number | null;
+  median_current_run_hours: number | null;
+  avg_age_years: number | null;
+}
+
+export interface FleetMaintenanceOverview {
+  granularity: "month" | "year";
+  date_from: string;
+  date_to: string;
+  cost_series: FleetCostPeriodPoint[];
+  total_maintenance_cost: number;
+  corrective_cost: number;
+  preventive_cost: number;
+  other_cost: number;
+  corrective_event_count: number;
+  preventive_event_count: number;
+  other_event_count: number;
+  fleet_aging_series: FleetAgingPoint[];
+  fleet_run_hours_snapshot: FleetRunHoursSnapshot;
+}
+
+export interface AnalyticsEntityOption {
+  id: string;
+  label: string;
+}
+
+export interface CompareEntityMetrics {
+  entity_id: string;
+  label: string;
+  total_cost: number;
+  event_count: number;
+  corrective_cost: number;
+  preventive_cost: number;
+  other_cost: number;
+  avg_order_cost: number | null;
+  avg_run_hours_at_event: number | null;
+}
+
+export interface FleetCompareResponse {
+  entity_type: "compressor" | "site";
+  date_from: string;
+  date_to: string;
+  entities: CompareEntityMetrics[];
+}
+
+export interface NotificationItem {
+  id: string;
+  category: string;
+  title: string;
+  body: string | null;
+  compressor_id: string | null;
+  work_order_id: string | null;
+  technician_id: string | null;
+  read_at: string | null;
+  created_at: string | null;
+}
+
 // ── API client ──────────────────────────────────────────────────────────
 
 export const api = {
   dashboard: {
     summary: () => fetchAPI<DashboardSummary>("/api/dashboard/summary"),
-    recentEvents: (limit = 10) =>
-      fetchAPI<ServiceEvent[]>(`/api/dashboard/recent-events?limit=${limit}`),
+    recentEvents: (
+      limit = 50,
+      sortBy: FleetEventSortField = "event_date",
+      order: "asc" | "desc" = "desc",
+      secondarySortBy?: FleetEventSortField,
+      secondaryOrder: "asc" | "desc" = "desc"
+    ) => {
+      const q = new URLSearchParams({
+        limit: String(limit),
+        sort_by: sortBy,
+        order,
+        secondary_order: secondaryOrder,
+      });
+      if (secondarySortBy) {
+        q.set("secondary_sort_by", secondarySortBy);
+      }
+      return fetchAPI<DashboardServiceEvent[]>(
+        `/api/dashboard/recent-events?${q.toString()}`
+      );
+    },
     recurringIssues: () =>
       fetchAPI<{ category: string; count: number; percentage: number }[]>(
         "/api/dashboard/recurring-issues"
@@ -302,7 +545,11 @@ export const api = {
     get: (id: string) =>
       fetchAPI<Recommendation>(`/api/recommendations/${id}`),
     forMachine: (machineId: string) =>
-      fetchAPI<Recommendation[]>(`/api/recommendations/machine/${machineId}`),
+      fetchAPI<RecommendationListItem[]>(`/api/recommendations/machine/${machineId}`),
+    assess: (compressorId: string) =>
+      fetchAPI<HealthAssessment>(`/api/recommendations/assess/${compressorId}`, {
+        method: "POST",
+      }),
     updateStatus: (id: string, status: string) =>
       fetchAPI<{ id: string; status: string }>(
         `/api/recommendations/${id}/status?status=${status}`,
@@ -332,13 +579,170 @@ export const api = {
     upload: async (file: File) => {
       const formData = new FormData();
       formData.append("file", file);
-      const res = await fetch(`${API_BASE}/api/ingestion/upload`, {
-        method: "POST",
-        body: formData,
-      });
+      const controller = new AbortController();
+      const uploadTimeout = 120_000;
+      const timer = setTimeout(() => controller.abort(), uploadTimeout);
+      let res: Response;
+      try {
+        res = await fetch(`${API_BASE}/api/ingestion/upload`, {
+          method: "POST",
+          body: formData,
+          headers: authHeaders(),
+          signal: controller.signal,
+        });
+      } catch (e: unknown) {
+        const name = e && typeof e === "object" && "name" in e ? String((e as { name: string }).name) : "";
+        if (name === "AbortError") {
+          throw new Error(`Upload timed out after ${uploadTimeout / 1000}s.`);
+        }
+        throw e;
+      } finally {
+        clearTimeout(timer);
+      }
       if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
       return res.json();
     },
     list: () => fetchAPI<unknown[]>("/api/ingestion/uploads"),
+  },
+
+  technicians: {
+    list: (limit = 200) =>
+      fetchAPI<TechnicianListItem[]>(`/api/technicians/?limit=${limit}`),
+    create: (name: string) =>
+      fetchAPI<TechnicianListItem>("/api/technicians/", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      }),
+    remove: (id: string) =>
+      fetchAPI<void>(`/api/technicians/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+  },
+
+  managers: {
+    list: (limit = 500) =>
+      fetchAPI<ManagerListItem[]>(`/api/managers/?limit=${limit}`),
+    create: (name: string) =>
+      fetchAPI<ManagerListItem>("/api/managers/", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      }),
+    remove: (id: string) =>
+      fetchAPI<void>(`/api/managers/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+    suggestions: (limit = 100) =>
+      fetchAPI<string[]>(
+        `/api/managers/suggestions?limit=${encodeURIComponent(String(limit))}`
+      ),
+  },
+
+  workOrders: {
+    list: (params?: {
+      status?: string;
+      compressor_id?: string;
+      assigned_technician_id?: string;
+      limit?: number;
+    }) => {
+      const q = new URLSearchParams();
+      if (params?.status) q.set("status", params.status);
+      if (params?.compressor_id) q.set("compressor_id", params.compressor_id);
+      if (params?.assigned_technician_id)
+        q.set("assigned_technician_id", params.assigned_technician_id);
+      if (params?.limit) q.set("limit", String(params.limit));
+      const qs = q.toString();
+      return fetchAPI<WorkOrderListItem[]>(
+        `/api/work-orders${qs ? `?${qs}` : ""}`
+      );
+    },
+    get: (id: string) => fetchAPI<WorkOrderDetail>(`/api/work-orders/${id}`),
+    create: (data: WorkOrderCreatePayload) =>
+      fetchAPI<WorkOrderDetail>("/api/work-orders/", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    update: (id: string, data: WorkOrderUpdatePayload) =>
+      fetchAPI<WorkOrderDetail>(`/api/work-orders/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    updateStep: (
+      workOrderId: string,
+      stepId: string,
+      data: { is_completed?: boolean; notes?: string | null }
+    ) =>
+      fetchAPI<WorkOrderStep>(
+        `/api/work-orders/${workOrderId}/steps/${stepId}`,
+        { method: "PATCH", body: JSON.stringify(data) }
+      ),
+  },
+
+  analytics: {
+    fleetOverview: (params?: {
+      date_from?: string;
+      date_to?: string;
+      granularity?: "month" | "year";
+    }) => {
+      const q = new URLSearchParams();
+      if (params?.date_from) q.set("date_from", params.date_from);
+      if (params?.date_to) q.set("date_to", params.date_to);
+      if (params?.granularity) q.set("granularity", params.granularity);
+      const qs = q.toString();
+      return fetchAPI<FleetMaintenanceOverview>(
+        `/api/analytics/fleet/overview${qs ? `?${qs}` : ""}`
+      );
+    },
+    fleetEntities: (kind: "compressor" | "site" = "compressor") =>
+      fetchAPI<AnalyticsEntityOption[]>(
+        `/api/analytics/fleet/entities?kind=${encodeURIComponent(kind)}`
+      ),
+    fleetCompare: (params: {
+      entity_type: "compressor" | "site";
+      entity_ids: string[];
+      date_from: string;
+      date_to: string;
+    }) => {
+      const q = new URLSearchParams();
+      q.set("entity_type", params.entity_type);
+      for (const id of params.entity_ids) {
+        q.append("entity_ids", id);
+      }
+      q.set("date_from", params.date_from);
+      q.set("date_to", params.date_to);
+      return fetchAPI<FleetCompareResponse>(
+        `/api/analytics/fleet/compare?${q.toString()}`
+      );
+    },
+  },
+
+  notifications: {
+    list: (params?: {
+      technician_id?: string;
+      unread_only?: boolean;
+      limit?: number;
+    }) => {
+      const q = new URLSearchParams();
+      if (params?.technician_id) q.set("technician_id", params.technician_id);
+      if (params?.unread_only) q.set("unread_only", "true");
+      if (params?.limit) q.set("limit", String(params.limit));
+      const qs = q.toString();
+      return fetchAPI<NotificationItem[]>(
+        `/api/notifications${qs ? `?${qs}` : ""}`
+      );
+    },
+    markRead: (id: string) =>
+      fetchAPI<{ id: string; read_at: string | null }>(
+        `/api/notifications/${id}/read`,
+        { method: "PATCH" }
+      ),
+    markAllRead: (technicianId?: string) => {
+      const q = technicianId
+        ? `?technician_id=${encodeURIComponent(technicianId)}`
+        : "";
+      return fetchAPI<{ marked_count: number }>(
+        `/api/notifications/mark-all-read${q}`,
+        { method: "POST" }
+      );
+    },
   },
 };

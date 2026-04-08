@@ -93,6 +93,9 @@ class Recommendation(Base):
     feedback: Mapped[Optional["FeedbackOutcome"]] = relationship(
         back_populates="recommendation", uselist=False,
     )
+    work_orders: Mapped[list["WorkOrder"]] = relationship(
+        "WorkOrder", back_populates="recommendation",
+    )
 
 
 class WorkflowStep(Base):

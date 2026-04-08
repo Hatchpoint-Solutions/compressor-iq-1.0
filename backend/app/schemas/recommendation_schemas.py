@@ -142,6 +142,34 @@ class RecommendationResponse(BaseModel):
     similar_cases: list[SimilarCaseResponse] = Field(default_factory=list)
 
 
+class HealthAlertItem(BaseModel):
+    severity: str = "medium"
+    title: str
+    description: str
+    recommended_action: str
+
+
+class HealthAssessmentResponse(BaseModel):
+    compressor_id: str
+    unit_id: str
+    overall_health: str = "unknown"
+    health_score: float = 0.0
+    summary: str = ""
+    alerts: list[HealthAlertItem] = Field(default_factory=list)
+    recent_event_count_30d: int = 0
+    recent_event_count_90d: int = 0
+    total_events: int = 0
+    current_run_hours: Optional[float] = None
+    last_service_date: Optional[date] = None
+    top_issues: list[str] = Field(default_factory=list)
+    ai_powered: bool = False
+    assessed_at: Optional[datetime] = None
+    work_orders_created: list[str] = Field(
+        default_factory=list,
+        description="IDs of system work orders opened from high-severity alerts (deduped)",
+    )
+
+
 class RecommendationListItem(BaseModel):
     """Lightweight recommendation for list views."""
     model_config = ConfigDict(from_attributes=True)

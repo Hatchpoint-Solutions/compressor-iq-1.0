@@ -18,6 +18,9 @@ def _create_engine():
     else:
         kwargs.setdefault("pool_size", 10)
         kwargs.setdefault("max_overflow", 20)
+        # Avoid long hangs when Postgres is down or URL points at unreachable host
+        if "postgresql" in url or url.startswith("postgres"):
+            kwargs["connect_args"] = {"connect_timeout": 10}
 
     return create_engine(url, **kwargs)
 

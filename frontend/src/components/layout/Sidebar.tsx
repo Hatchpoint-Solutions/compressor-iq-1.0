@@ -5,9 +5,14 @@ import { usePathname } from "next/navigation";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: "📊" },
+  { href: "/analytics", label: "Analytics", icon: "📈" },
   { href: "/service-records", label: "Service Records", icon: "📋" },
   { href: "/machines", label: "Compressors", icon: "⚙️" },
+  { href: "/work-orders", label: "Work orders", icon: "📌" },
+  { href: "/my-work", label: "My work", icon: "🛠️" },
+  { href: "/notifications", label: "Notifications", icon: "🔔" },
   { href: "/workflow", label: "Workflows", icon: "🔧" },
+  { href: "/configuration", label: "Configuration", icon: "👥" },
   { href: "/upload", label: "Upload Data", icon: "📤" },
 ];
 
@@ -38,6 +43,39 @@ export function Sidebar() {
             </Link>
           );
         })}
+        <div className="pt-3 mt-2 border-t border-slate-700 space-y-1">
+          <Link
+            href="/user-manual"
+            className={`sidebar-link ${pathname === "/user-manual" ? "active" : "text-slate-300"}`}
+          >
+            <span className="text-lg" aria-hidden>
+              📘
+            </span>
+            User manual
+          </Link>
+          <a
+            href="/CompressorIQ_User_Manual.pdf"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="sidebar-link text-slate-300 hover:text-amber-200"
+          >
+            <span className="text-lg" aria-hidden>
+              📕
+            </span>
+            Manual PDF (text + screens)
+          </a>
+          <a
+            href="/CompressorIQ_User_Guide_Screenshots.pdf"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="sidebar-link text-slate-300 hover:text-amber-200"
+          >
+            <span className="text-lg" aria-hidden>
+              🖼️
+            </span>
+            Screenshots PDF
+          </a>
+        </div>
       </nav>
 
       <div className="px-4 py-4 border-t border-slate-700">

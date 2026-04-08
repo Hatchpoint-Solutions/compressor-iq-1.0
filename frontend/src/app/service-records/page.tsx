@@ -8,9 +8,9 @@ import {
   categoryLabel,
   categoryBadgeClass,
 } from "@/lib/utils";
-import { useState, useEffect, useCallback, Fragment } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, Fragment, Suspense } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 const PAGE_SIZE = 15;
 
@@ -20,8 +20,11 @@ function truncate(text: string | null, max: number): string {
   return `${text.slice(0, max)}…`;
 }
 
-export default function ServiceRecordsPage() {
+function ServiceRecordsContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlEventId = searchParams.get("event");
+  const urlUnitHint = searchParams.get("unit") ?? "";
 
   const [draftSearch, setDraftSearch] = useState("");
   const [draftCategory, setDraftCategory] = useState("");
@@ -32,6 +35,7 @@ export default function ServiceRecordsPage() {
   const [activeCategory, setActiveCategory] = useState("");
   const [activeDateFrom, setActiveDateFrom] = useState("");
   const [activeDateTo, setActiveDateTo] = useState("");
+  const [activeCompressorId, setActiveCompressorId] = useState("");
 
   const [page, setPage] = useState(1);
   const [data, setData] = useState<PaginatedResponse<ServiceEvent> | null>(null);
@@ -65,17 +69,45 @@ export default function ServiceRecordsPage() {
     };
   }, []);
 
+  /** Sync filters and expanded row from URL (dashboard deep links, browser back/forward). */
+  useLayoutEffect(() => {
+    const cat = searchParams.get("category") ?? "";
+    const comp = searchParams.get("compressor_id") ?? "";
+    setDraftCategory(cat);
+    setActiveCategory(cat);
+    setActiveCompressorId(comp);
+    const ev = searchParams.get("event");
+    setExpandedId(ev);
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (urlEventId) setPage(1);
+  }, [urlEventId]);
+
   const listParams = useCallback((): Record<string, string> => {
     const p: Record<string, string> = {
       page: String(page),
       page_size: String(PAGE_SIZE),
     };
+    if (urlEventId) {
+      p.event_id = urlEventId;
+      return p;
+    }
     if (activeSearch.trim()) p.search = activeSearch.trim();
     if (activeCategory) p.event_category = activeCategory;
     if (activeDateFrom) p.date_from = activeDateFrom;
     if (activeDateTo) p.date_to = activeDateTo;
+    if (activeCompressorId) p.compressor_id = activeCompressorId;
     return p;
-  }, [page, activeSearch, activeCategory, activeDateFrom, activeDateTo]);
+  }, [
+    page,
+    activeSearch,
+    activeCategory,
+    activeDateFrom,
+    activeDateTo,
+    activeCompressorId,
+    urlEventId,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,12 +171,33 @@ export default function ServiceRecordsPage() {
     setActiveCategory("");
     setActiveDateFrom("");
     setActiveDateTo("");
+    setActiveCompressorId("");
     setPage(1);
     setExpandedId(null);
+    router.replace("/service-records");
   }
 
   function toggleView(id: string) {
-    setExpandedId((prev) => (prev === id ? null : id));
+    setExpandedId((prev) => {
+      if (prev === id) {
+        if (searchParams.get("event")) {
+          const sp = new URLSearchParams(searchParams.toString());
+          sp.delete("event");
+          const qs = sp.toString();
+          router.replace(qs ? `/service-records?${qs}` : "/service-records");
+        }
+        return null;
+      }
+      return id;
+    });
+  }
+
+  function clearEventDeepLink() {
+    const sp = new URLSearchParams(searchParams.toString());
+    sp.delete("event");
+    const qs = sp.toString();
+    router.replace(qs ? `/service-records?${qs}` : "/service-records");
+    setExpandedId(null);
   }
 
   async function handleGenerate(eventId: string) {
@@ -181,6 +234,43 @@ export default function ServiceRecordsPage() {
             <p className="mt-1 text-sm text-slate-600">
               Search and review maintenance service events.
             </p>
+            {urlEventId && (
+              <div className="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-950">
+                <span>
+                  Opened a specific service event from the dashboard — details are expanded below.
+                </span>
+                <button
+                  type="button"
+                  onClick={clearEventDeepLink}
+                  className="rounded-md bg-white px-3 py-1 text-xs font-medium text-amber-900 shadow-sm ring-1 ring-amber-300/80 transition hover:bg-amber-100"
+                >
+                  Show all records
+                </button>
+              </div>
+            )}
+            {!urlEventId && activeCompressorId && (
+              <p className="mt-2 text-sm text-slate-600">
+                Showing events for compressor{" "}
+                <span className="font-mono font-medium text-slate-900">
+                  {urlUnitHint || activeCompressorId.slice(0, 8)}
+                </span>
+                .{" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sp = new URLSearchParams(searchParams.toString());
+                    sp.delete("compressor_id");
+                    sp.delete("unit");
+                    const qs = sp.toString();
+                    router.replace(qs ? `/service-records?${qs}` : "/service-records");
+                    setActiveCompressorId("");
+                  }}
+                  className="font-medium text-amber-800 underline decoration-amber-300 underline-offset-2 hover:text-amber-950"
+                >
+                  Clear compressor filter
+                </button>
+              </p>
+            )}
           </div>
           <Link
             href="/"
@@ -542,5 +632,21 @@ export default function ServiceRecordsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ServiceRecordsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-50 p-6 md:p-8">
+          <div className="mx-auto max-w-7xl animate-pulse text-slate-500">
+            Loading service records…
+          </div>
+        </div>
+      }
+    >
+      <ServiceRecordsContent />
+    </Suspense>
   );
 }

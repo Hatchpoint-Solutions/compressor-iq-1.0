@@ -89,6 +89,9 @@ class Compressor(Base):
     site: Mapped[Optional["Site"]] = relationship(back_populates="compressors")
     service_events: Mapped[list["ServiceEvent"]] = relationship(back_populates="compressor")
     recommendations: Mapped[list["Recommendation"]] = relationship(back_populates="compressor")
+    work_orders: Mapped[list["WorkOrder"]] = relationship(
+        "WorkOrder", back_populates="compressor",
+    )
 
 
 class Technician(Base):
@@ -111,6 +114,19 @@ class Technician(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
 
     actions: Mapped[list["ServiceEventAction"]] = relationship(back_populates="technician")
+    work_orders: Mapped[list["WorkOrder"]] = relationship(
+        "WorkOrder", back_populates="assigned_technician",
+    )
+
+
+class Manager(Base):
+    """Supervisor / manager name for assignment and reporting (directory + user-added)."""
+
+    __tablename__ = "managers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=func.now())
 
 
 class MaintenanceActionType(Base):

@@ -37,11 +37,25 @@ def list_events(
     date_to: Optional[date] = None,
     order_status: Optional[str] = None,
     search: Optional[str] = None,
+    event_id: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
+    """When ``event_id`` is set (e.g. deep link from dashboard), return only that event."""
+
     q = db.query(ServiceEvent)
+
+    if event_id:
+        q = q.filter(ServiceEvent.id == event_id)
+        total = q.count()
+        rows = (
+            q.order_by(ServiceEvent.event_date.desc().nullslast(), ServiceEvent.order_number.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return PaginatedResponse(items=rows, total=total, page=page, page_size=page_size)
 
     if compressor_id:
         q = q.filter(ServiceEvent.compressor_id == compressor_id)

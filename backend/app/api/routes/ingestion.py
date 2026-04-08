@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.deps import verify_api_key_if_configured
 from app.models.import_models import ImportBatch, ImportFile
 
 router = APIRouter(prefix="/api/ingestion", tags=["ingestion"])
@@ -42,7 +43,7 @@ def _preview_columns(file_path: str) -> list[str] | None:
         return None
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(verify_api_key_if_configured)])
 def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")

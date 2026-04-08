@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.deps import verify_api_key_if_configured
 from app.models.analytics_models import FeedbackOutcome
 from app.models.event_models import ServiceEvent
 from app.schemas.recommendation_schemas import (
@@ -20,7 +21,11 @@ from app.schemas.recommendation_schemas import (
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
 
 
-@router.post("/", response_model=FeedbackResponse)
+@router.post(
+    "/",
+    response_model=FeedbackResponse,
+    dependencies=[Depends(verify_api_key_if_configured)],
+)
 def submit_feedback(body: FeedbackCreateRequest, db: Session = Depends(get_db)):
     """Submit technician feedback for a service event."""
     event = db.query(ServiceEvent).filter(ServiceEvent.id == body.service_event_id).first()

@@ -48,6 +48,8 @@ A production-quality data ingestion and management layer for compressor maintena
 | Validation | Pydantic v2 |
 | Testing | pytest |
 
+**End-user help:** full manual [`USER_MANUAL.md`](USER_MANUAL.md) (manager + technician); shorter guide [`USER_GUIDE.md`](USER_GUIDE.md). In the app: **User manual** in the sidebar.
+
 ## Quick Start
 
 ### Prerequisites

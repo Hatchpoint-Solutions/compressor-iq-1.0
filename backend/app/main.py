@@ -65,8 +65,12 @@ from app.api.routes import (  # noqa: E402
     feedback,
     imports,
     ingestion,
+    managers,
+    notifications,
     recommendations,
     service_events,
+    technicians,
+    work_orders,
 )
 
 app.include_router(imports.router)
@@ -77,6 +81,10 @@ app.include_router(recommendations.router)
 app.include_router(feedback.router)
 app.include_router(analytics.router)
 app.include_router(ingestion.router)
+app.include_router(technicians.router)
+app.include_router(managers.router)
+app.include_router(work_orders.router)
+app.include_router(notifications.router)
 
 
 @app.get("/health")

@@ -15,6 +15,7 @@ from app.models.master_models import (
     Compressor,
     IssueCategory,
     MaintenanceActionType,
+    Manager,
     ServiceOutcomeType,
     Site,
     Technician,
@@ -31,6 +32,8 @@ from app.models.analytics_models import (
     SimilarCase,
     WorkflowStep,
 )
+from app.models.work_order_models import WorkOrder, WorkOrderStep
+from app.models.notification_models import Notification
 
 __all__ = [
     "ImportBatch",
@@ -41,6 +44,7 @@ __all__ = [
     "Compressor",
     "Site",
     "Technician",
+    "Manager",
     "MaintenanceActionType",
     "IssueCategory",
     "ServiceOutcomeType",
@@ -52,4 +56,7 @@ __all__ = [
     "WorkflowStep",
     "SimilarCase",
     "FeedbackOutcome",
+    "WorkOrder",
+    "WorkOrderStep",
+    "Notification",
 ]

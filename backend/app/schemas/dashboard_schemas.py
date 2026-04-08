@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.event_schemas import ServiceEventListItem
+
 
 class TopIssueItem(BaseModel):
     category: str
@@ -22,15 +24,26 @@ class MachineAttentionItem(BaseModel):
     last_event_date: Optional[date] = None
 
 
+class CompressorDropdownItem(BaseModel):
+    id: str
+    unit_id: str
+    status: str = "active"
+    current_run_hours: Optional[float] = None
+    equipment_number: Optional[str] = None
+    compressor_type: Optional[str] = None
+
+
 class DashboardSummary(BaseModel):
     total_events: int = 0
     total_compressors: int = 0
+    total_fleet_run_hours: float = 0.0
     recent_events_count: int = 0
     corrective_count: int = 0
     preventive_count: int = 0
     avg_cost: Optional[float] = None
     top_issues: list[TopIssueItem] = Field(default_factory=list)
     machines_needing_attention: list[MachineAttentionItem] = Field(default_factory=list)
+    compressors: list[CompressorDropdownItem] = Field(default_factory=list)
 
 
 class EventStats(BaseModel):
@@ -39,3 +52,12 @@ class EventStats(BaseModel):
     by_activity_type: dict[str, int] = Field(default_factory=dict)
     total_cost: Optional[float] = None
     avg_cost: Optional[float] = None
+
+
+class DashboardServiceEventItem(ServiceEventListItem):
+    """Fleet table row with derived sort/display fields."""
+
+    issue_severity: Optional[str] = None
+    criticality_rank: int = 0
+    primary_technician_name: Optional[str] = None
+    manager_name: Optional[str] = None
