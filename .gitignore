@@ -46,3 +46,6 @@ frontend/.env.local
 # Database
 *.db
 *.sqlite3
+
+# Local Enerflex / sample spreadsheets (keep on disk; do not publish)
+/Unit MC6068 Maintenance.xlsx
