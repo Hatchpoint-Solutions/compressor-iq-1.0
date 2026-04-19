@@ -580,7 +580,9 @@ export const api = {
       const formData = new FormData();
       formData.append("file", file);
       const controller = new AbortController();
-      const uploadTimeout = 120_000;
+      /** Large imports can run minutes on the server; override with NEXT_PUBLIC_UPLOAD_TIMEOUT_MS. */
+      const uploadTimeout =
+        Number(process.env.NEXT_PUBLIC_UPLOAD_TIMEOUT_MS) || 600_000;
       const timer = setTimeout(() => controller.abort(), uploadTimeout);
       let res: Response;
       try {
@@ -593,13 +595,26 @@ export const api = {
       } catch (e: unknown) {
         const name = e && typeof e === "object" && "name" in e ? String((e as { name: string }).name) : "";
         if (name === "AbortError") {
-          throw new Error(`Upload timed out after ${uploadTimeout / 1000}s.`);
+          throw new Error(
+            `Upload timed out after ${Math.round(uploadTimeout / 1000)}s (${API_BASE}). ` +
+              `Increase NEXT_PUBLIC_UPLOAD_TIMEOUT_MS if imports are very large.`
+          );
         }
-        throw e;
+        const raw = e instanceof Error ? e.message : "Network error";
+        throw new Error(
+          `${raw} — cannot reach API at ${API_BASE}. ` +
+            `Start the backend (e.g. from the project backend folder: python -m uvicorn app.main:app --host 127.0.0.1 --port 8001). ` +
+            `Open ${API_BASE}/health in the browser to verify. If the UI runs on a port other than 3000, set API CORS or match NEXT_PUBLIC_API_URL.`
+        );
       } finally {
         clearTimeout(timer);
       }
-      if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        throw new Error(
+          `Upload failed (${res.status}): ${detail || res.statusText || "no details"}`
+        );
+      }
       return res.json();
     },
     list: () => fetchAPI<unknown[]>("/api/ingestion/uploads"),

@@ -26,6 +26,20 @@ import { formatCurrency, formatNumber } from "@/lib/utils";
 
 const PIE_COLORS = ["#dc2626", "#16a34a", "#64748b"];
 
+/** Recharts `Tooltip` passes `ValueType` (string | number | …); coerce for safe formatting. */
+function tooltipFiniteNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return 0;
+}
+
+function tooltipCurrencyValue(value: unknown): string {
+  return formatCurrency(tooltipFiniteNumber(value));
+}
+
 /** Must stay in sync with backend `FLEET_COMPARE_MAX_ENTITIES`. */
 const MAX_COMPARE_ENTITIES = 12;
 
@@ -290,7 +304,7 @@ export default function AnalyticsPage() {
                         tickFormatter={(v) => `$${Number(v) >= 1000 ? `${(v / 1000).toFixed(0)}k` : v}`}
                       />
                       <Tooltip
-                        formatter={(value: number | undefined) => formatCurrency(value ?? 0)}
+                        formatter={(value) => tooltipCurrencyValue(value)}
                         labelFormatter={(label) => `Period: ${label}`}
                       />
                       <Bar dataKey="total_cost" name="Maintenance cost" fill="#f59e0b" radius={[4, 4, 0, 0]} />
@@ -325,7 +339,7 @@ export default function AnalyticsPage() {
                           <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                         ))}
                       </Pie>
-                      <Tooltip formatter={(value: number | undefined) => formatCurrency(value ?? 0)} />
+                      <Tooltip formatter={(value) => tooltipCurrencyValue(value)} />
                       <Legend />
                     </PieChart>
                   </ResponsiveContainer>
@@ -351,8 +365,10 @@ export default function AnalyticsPage() {
                     <XAxis dataKey="period" tick={{ fontSize: 11 }} />
                     <YAxis tick={{ fontSize: 11 }} />
                     <Tooltip
-                      formatter={(value: number | null | undefined) =>
-                        value != null ? `${formatNumber(value)} hrs` : "—"
+                      formatter={(value) =>
+                        value == null || value === ""
+                          ? "—"
+                          : `${formatNumber(tooltipFiniteNumber(value))} hrs`
                       }
                     />
                     <Legend />
@@ -465,9 +481,9 @@ export default function AnalyticsPage() {
                     tick={{ fontSize: 11 }}
                   />
                   <Tooltip
-                    formatter={(value: number | undefined, name: string) => [
-                      formatCurrency(value ?? 0),
-                      name,
+                    formatter={(value, name) => [
+                      tooltipCurrencyValue(value),
+                      String(name),
                     ]}
                     labelFormatter={(_, payload) =>
                       payload?.[0]?.payload?.fullLabel ?? ""

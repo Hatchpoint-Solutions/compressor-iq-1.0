@@ -46,3 +46,7 @@ frontend/.env.local
 # Database
 *.db
 *.sqlite3
+
+# Spreadsheets / sample datasets (keep local only)
+*.xlsx
+*.xls
