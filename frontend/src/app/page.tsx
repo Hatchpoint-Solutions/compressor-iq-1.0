@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -80,29 +80,29 @@ export default function DashboardPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [assessmentLoading, setAssessmentLoading] = useState(false);
 
+  /** Avoid stuck loading when React Strict Mode or fast remounts leave stale requests behind. */
+  const dashboardLoadGen = useRef(0);
+  const detailLoadGen = useRef(0);
+
   useEffect(() => {
-    let cancelled = false;
+    const gen = ++dashboardLoadGen.current;
     setLoading(true);
     setError(null);
 
     api.dashboard
       .summary()
       .then((sum) => {
-        if (!cancelled) setSummary(sum);
+        if (gen === dashboardLoadGen.current) setSummary(sum);
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
+        if (gen === dashboardLoadGen.current) {
           setError(err instanceof Error ? err.message : "Failed to load dashboard data.");
           setSummary(null);
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (gen === dashboardLoadGen.current) setLoading(false);
       });
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   useEffect(() => {
@@ -138,7 +138,7 @@ export default function DashboardPage() {
       return;
     }
 
-    let cancelled = false;
+    const gen = ++detailLoadGen.current;
     setDetailLoading(true);
 
     Promise.all([
@@ -148,26 +148,22 @@ export default function DashboardPage() {
       api.recommendations.forMachine(compressorId),
     ])
       .then(([detail, timeline, issues, recs]) => {
-        if (!cancelled) {
-          setCompressorDetail(detail);
-          setCompressorTimeline(timeline);
-          setCompressorIssues(issues);
-          setCompressorRecs(recs);
-        }
+        if (gen !== detailLoadGen.current) return;
+        setCompressorDetail(detail);
+        setCompressorTimeline(timeline);
+        setCompressorIssues(issues);
+        setCompressorRecs(recs);
       })
       .catch(() => {
-        if (!cancelled) {
-          setCompressorDetail(null);
-          setCompressorTimeline([]);
-          setCompressorIssues([]);
-          setCompressorRecs([]);
-        }
+        if (gen !== detailLoadGen.current) return;
+        setCompressorDetail(null);
+        setCompressorTimeline([]);
+        setCompressorIssues([]);
+        setCompressorRecs([]);
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (gen === detailLoadGen.current) setDetailLoading(false);
       });
-
-    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -872,7 +868,10 @@ function CompressorDetailView({
 
         {recommendations.length === 0 ? (
           <p className="mt-4 text-sm text-slate-500">
-            No recommendations generated yet. Run a health assessment above or generate from a service event.
+            No saved recommendations yet. This list only fills after you generate one from a service record
+            (Service Records → open an event → generate) or via the API. Health assessment results appear in the
+            section above and are not stored here. You also need imported maintenance data (compressors and events)
+            before generation is meaningful.
           </p>
         ) : (
           <div className="mt-4 space-y-3">

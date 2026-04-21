@@ -2,7 +2,7 @@
 
 import { api, type Asset, type AssetDetail, type ServiceEvent, type AssetIssueFrequency } from "@/lib/api";
 import { formatDate, formatNumber, categoryLabel, categoryBadgeClass } from "@/lib/utils";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 
 function statusBadgeClass(status: string): string {
@@ -33,28 +33,27 @@ export default function MachinesPage() {
   const [timeline, setTimeline] = useState<ServiceEvent[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const listLoadGen = useRef(0);
+  const detailLoadGen = useRef(0);
 
   useEffect(() => {
-    let cancelled = false;
+    const gen = ++listLoadGen.current;
     setListLoading(true);
     setListError(null);
     api.assets
       .list()
       .then((list) => {
-        if (!cancelled) setAssets(list);
+        if (gen === listLoadGen.current) setAssets(list);
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
+        if (gen === listLoadGen.current) {
           setListError(err instanceof Error ? err.message : "Failed to load assets.");
           setAssets([]);
         }
       })
       .finally(() => {
-        if (!cancelled) setListLoading(false);
+        if (gen === listLoadGen.current) setListLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   useEffect(() => {
@@ -65,7 +64,7 @@ export default function MachinesPage() {
       setDetailError(null);
       return;
     }
-    let cancelled = false;
+    const gen = ++detailLoadGen.current;
     setDetailLoading(true);
     setDetailError(null);
     Promise.all([
@@ -74,26 +73,21 @@ export default function MachinesPage() {
       api.assets.timeline(selectedId, 20),
     ])
       .then(([d, iss, tl]) => {
-        if (!cancelled) {
-          setDetail(d);
-          setIssues(iss);
-          setTimeline(timelineSort(tl));
-        }
+        if (gen !== detailLoadGen.current) return;
+        setDetail(d);
+        setIssues(iss);
+        setTimeline(timelineSort(tl));
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
-          setDetailError(err instanceof Error ? err.message : "Failed to load asset detail.");
-          setDetail(null);
-          setIssues([]);
-          setTimeline([]);
-        }
+        if (gen !== detailLoadGen.current) return;
+        setDetailError(err instanceof Error ? err.message : "Failed to load asset detail.");
+        setDetail(null);
+        setIssues([]);
+        setTimeline([]);
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (gen === detailLoadGen.current) setDetailLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [selectedId]);
 
   return (

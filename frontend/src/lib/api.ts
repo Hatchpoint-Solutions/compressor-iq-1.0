@@ -1,7 +1,15 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8001";
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
 /** Default request timeout (ms). Prevents the UI from hanging indefinitely if the API is down or unreachable. */
-const DEFAULT_FETCH_TIMEOUT_MS = Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS) || 45_000;
+const DEFAULT_FETCH_TIMEOUT_MS = Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS) || 20_000;
+
+/** Default API origin. Call the backend directly; Next.js rewrites to /api proved unreliable in dev (hung requests). */
+function apiBase(): string {
+  return process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8001";
+}
+
+function apiBaseForErrors(): string {
+  return apiBase();
+}
 
 function authHeaders(): Record<string, string> {
   return API_KEY ? { "X-API-Key": API_KEY } : {};
@@ -17,7 +25,7 @@ async function fetchAPI<T>(path: string, options?: FetchAPIOptions): Promise<T> 
 
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
+    res = await fetch(`${apiBase()}${path}`, {
       ...rest,
       signal: controller.signal,
       headers: {
@@ -30,13 +38,13 @@ async function fetchAPI<T>(path: string, options?: FetchAPIOptions): Promise<T> 
     const name = e && typeof e === "object" && "name" in e ? String((e as { name: string }).name) : "";
     if (name === "AbortError") {
       throw new Error(
-        `Request timed out after ${Math.round(timeoutMs / 1000)}s (${API_BASE}). Is the API running and NEXT_PUBLIC_API_URL correct?`
+        `Request timed out after ${Math.round(timeoutMs / 1000)}s (${apiBaseForErrors()}). Is the API running?`
       );
     }
     throw new Error(
       e instanceof Error
-        ? `${e.message} (${API_BASE})`
-        : `Network error (${API_BASE})`
+        ? `${e.message} (${apiBaseForErrors()})`
+        : `Network error (${apiBaseForErrors()})`
     );
   } finally {
     clearTimeout(timer);
@@ -586,7 +594,7 @@ export const api = {
       const timer = setTimeout(() => controller.abort(), uploadTimeout);
       let res: Response;
       try {
-        res = await fetch(`${API_BASE}/api/ingestion/upload`, {
+        res = await fetch(`${apiBase()}/api/ingestion/upload`, {
           method: "POST",
           body: formData,
           headers: authHeaders(),
@@ -596,23 +604,37 @@ export const api = {
         const name = e && typeof e === "object" && "name" in e ? String((e as { name: string }).name) : "";
         if (name === "AbortError") {
           throw new Error(
-            `Upload timed out after ${Math.round(uploadTimeout / 1000)}s (${API_BASE}). ` +
+            `Upload timed out after ${Math.round(uploadTimeout / 1000)}s (${apiBaseForErrors()}). ` +
               `Increase NEXT_PUBLIC_UPLOAD_TIMEOUT_MS if imports are very large.`
           );
         }
         const raw = e instanceof Error ? e.message : "Network error";
         throw new Error(
-          `${raw} — cannot reach API at ${API_BASE}. ` +
+          `${raw} — cannot reach API at ${apiBaseForErrors()}. ` +
             `Start the backend (e.g. from the project backend folder: python -m uvicorn app.main:app --host 127.0.0.1 --port 8001). ` +
-            `Open ${API_BASE}/health in the browser to verify. If the UI runs on a port other than 3000, set API CORS or match NEXT_PUBLIC_API_URL.`
+            `Open ${apiBaseForErrors()}/health in the browser to verify. If the UI runs on a port other than 3000, set API CORS or match NEXT_PUBLIC_API_URL.`
         );
       } finally {
         clearTimeout(timer);
       }
       if (!res.ok) {
-        const detail = await res.text().catch(() => "");
+        const text = await res.text();
+        let detail = text;
+        try {
+          const j = text ? (JSON.parse(text) as { detail?: unknown }) : null;
+          if (j?.detail != null) {
+            detail =
+              typeof j.detail === "string"
+                ? j.detail
+                : Array.isArray(j.detail)
+                  ? j.detail.map(String).join("; ")
+                  : text;
+          }
+        } catch {
+          /* keep raw text */
+        }
         throw new Error(
-          `Upload failed (${res.status}): ${detail || res.statusText || "no details"}`
+          detail ? `Upload failed (${res.status}): ${detail}` : `Upload failed: ${res.status}`
         );
       }
       return res.json();

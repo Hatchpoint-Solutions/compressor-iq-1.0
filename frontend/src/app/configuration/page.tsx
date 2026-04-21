@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import {
   api,
   type ManagerListItem,
@@ -16,6 +16,7 @@ export default function ConfigurationPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const loadGen = useRef(0);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -30,20 +31,17 @@ export default function ConfigurationPage() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    const gen = ++loadGen.current;
     setLoading(true);
     refresh()
       .catch((e: unknown) => {
-        if (!cancelled) {
+        if (gen === loadGen.current) {
           setError(e instanceof Error ? e.message : "Failed to load directory.");
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (gen === loadGen.current) setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [refresh]);
 
   async function addTechnician(e: React.FormEvent) {

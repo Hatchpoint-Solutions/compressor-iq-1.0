@@ -26,20 +26,50 @@ logger = logging.getLogger(__name__)
 ALLOWED_EXTENSIONS = {".xlsx", ".xls", ".csv", ".tsv"}
 
 
-def _preview_columns(file_path: str) -> list[str] | None:
-    """Read column names from the first sheet of a file without processing all rows."""
-    ext = os.path.splitext(file_path)[1].lower()
+def _columns_for_upload_validation(file_path: str, ext: str) -> list[str] | None:
+    """Read column headers for pre-import checks without loading full rows.
+
+    For Excel, every sheet is considered. The import pipeline reads all sheets, but the
+    old logic only inspected the first sheet, so a cover/instructions tab caused false
+    'no recognized columns' errors even when a later tab had valid SAP export columns.
+    """
+    from app.services.ingestion.source_mapper import validate_column_compatibility
+
     try:
         import pandas as pd
+
         if ext in (".xlsx", ".xls"):
-            df = pd.read_excel(file_path, nrows=0)
-        elif ext in (".csv", ".tsv"):
+            xls = pd.ExcelFile(file_path)
+            sheet_candidates: list[list[str]] = []
+            for name in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=name, nrows=0)
+                cols = [str(c).strip() for c in df.columns if str(c).strip()]
+                if cols:
+                    sheet_candidates.append(cols)
+            if not sheet_candidates:
+                return None
+            best_partial: tuple[list[str], tuple[int, int]] | None = None
+            for cols in sheet_candidates:
+                matched, missing_required = validate_column_compatibility(cols)
+                if not matched:
+                    continue
+                if not missing_required:
+                    return cols
+                rank = (len(matched), -len(missing_required))
+                if best_partial is None or rank > best_partial[1]:
+                    best_partial = (cols, rank)
+            if best_partial is not None:
+                return best_partial[0]
+            return sheet_candidates[0]
+
+        if ext in (".csv", ".tsv"):
             sep = "\t" if ext == ".tsv" else ","
             df = pd.read_csv(file_path, nrows=0, sep=sep)
-        else:
-            return None
-        return [str(c).strip() for c in df.columns if str(c).strip()]
+            return [str(c).strip() for c in df.columns if str(c).strip()]
+
+        return None
     except Exception:
+        logger.exception("Column preview failed for %s", file_path)
         return None
 
 
@@ -70,7 +100,7 @@ def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
 
     abs_path = os.path.abspath(dest_path)
 
-    columns = _preview_columns(abs_path)
+    columns = _columns_for_upload_validation(abs_path, ext)
     if columns is not None:
         from app.services.ingestion.source_mapper import validate_column_compatibility
         matched, missing_required = validate_column_compatibility(columns)

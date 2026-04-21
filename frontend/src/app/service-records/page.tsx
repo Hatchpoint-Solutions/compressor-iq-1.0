@@ -8,7 +8,7 @@ import {
   categoryLabel,
   categoryBadgeClass,
 } from "@/lib/utils";
-import { useState, useEffect, useLayoutEffect, useCallback, Fragment, Suspense } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, Fragment, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -51,22 +51,22 @@ function ServiceRecordsContent() {
   const [detailError, setDetailError] = useState<string | null>(null);
 
   const [genLoadingId, setGenLoadingId] = useState<string | null>(null);
+  const categoriesLoadGen = useRef(0);
+  const listLoadGen = useRef(0);
+  const detailLoadGen = useRef(0);
 
   useEffect(() => {
-    let cancelled = false;
+    const gen = ++categoriesLoadGen.current;
     (async () => {
       try {
         const list = await api.events.categories();
-        if (!cancelled) setCategories(list);
+        if (gen === categoriesLoadGen.current) setCategories(list);
       } catch {
-        if (!cancelled) setCategories([]);
+        if (gen === categoriesLoadGen.current) setCategories([]);
       } finally {
-        if (!cancelled) setCategoriesLoading(false);
+        if (gen === categoriesLoadGen.current) setCategoriesLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   /** Sync filters and expanded row from URL (dashboard deep links, browser back/forward). */
@@ -110,23 +110,20 @@ function ServiceRecordsContent() {
   ]);
 
   useEffect(() => {
-    let cancelled = false;
+    const gen = ++listLoadGen.current;
     setLoading(true);
     setError(null);
     (async () => {
       try {
         const res = await api.events.list(listParams());
-        if (!cancelled) setData(res);
+        if (gen === listLoadGen.current) setData(res);
       } catch (e) {
-        if (!cancelled)
+        if (gen === listLoadGen.current)
           setError(e instanceof Error ? e.message : "Failed to load events");
       } finally {
-        if (!cancelled) setLoading(false);
+        if (gen === listLoadGen.current) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [listParams]);
 
   useEffect(() => {
@@ -135,23 +132,20 @@ function ServiceRecordsContent() {
       setDetailError(null);
       return;
     }
-    let cancelled = false;
+    const gen = ++detailLoadGen.current;
     setDetailLoading(true);
     setDetailError(null);
     (async () => {
       try {
         const ev = await api.events.get(expandedId);
-        if (!cancelled) setDetail(ev);
+        if (gen === detailLoadGen.current) setDetail(ev);
       } catch (e) {
-        if (!cancelled)
+        if (gen === detailLoadGen.current)
           setDetailError(e instanceof Error ? e.message : "Failed to load event");
       } finally {
-        if (!cancelled) setDetailLoading(false);
+        if (gen === detailLoadGen.current) setDetailLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [expandedId]);
 
   function handleSearch() {

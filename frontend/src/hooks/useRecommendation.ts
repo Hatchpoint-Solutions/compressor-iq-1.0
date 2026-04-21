@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useReducer } from "react";
+import { useCallback, useEffect, useReducer, useRef } from "react";
 import {
   api,
   type FeedbackCreate,
@@ -109,32 +109,29 @@ function reducer(state: State, action: Action): State {
 
 export function useRecommendation(id: string) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const fetchGen = useRef(0);
 
   useEffect(() => {
     if (!id) {
       dispatch({ type: "FETCH_ERROR", payload: "Missing recommendation ID." });
       return;
     }
-    let cancelled = false;
+    const gen = ++fetchGen.current;
     dispatch({ type: "FETCH_START" });
 
     api.recommendations
       .get(id)
       .then((r) => {
-        if (!cancelled) dispatch({ type: "FETCH_SUCCESS", payload: r });
+        if (gen === fetchGen.current) dispatch({ type: "FETCH_SUCCESS", payload: r });
       })
       .catch((err: unknown) => {
-        if (!cancelled)
-          dispatch({
-            type: "FETCH_ERROR",
-            payload:
-              err instanceof Error ? err.message : "Failed to load recommendation.",
-          });
+        if (gen !== fetchGen.current) return;
+        dispatch({
+          type: "FETCH_ERROR",
+          payload:
+            err instanceof Error ? err.message : "Failed to load recommendation.",
+        });
       });
-
-    return () => {
-      cancelled = true;
-    };
   }, [id]);
 
   const completeStep = useCallback(

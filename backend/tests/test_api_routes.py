@@ -491,3 +491,55 @@ class TestFleetAnalyticsRoutes:
             },
         )
         assert r.status_code == 422
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Ingestion / file upload
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestIngestionUpload:
+    """Upload must validate columns the same way the import pipeline does (all Excel sheets)."""
+
+    def test_upload_multisheet_excel_succeeds_when_first_sheet_is_not_data(self, client, tmp_path):
+        """Cover sheet with junk columns + second sheet with SAP export must not fail pre-check."""
+        import pandas as pd
+
+        data = {
+            "Plant": ["1031"],
+            "Order & Description": ["4113904 - MC6068 - JANUARY 2020 CALLOUTS"],
+            "Customer Name": ["EOG Resources Inc"],
+            "Equipment": [500021946],
+            "Type": ["ZNS1"],
+            "Order Review Comments": ["* note"],
+            "Order Status": ["TECO"],
+            "User Status": ["SMOK"],
+            "Maintenance Activity Type": ["ZUR - Unscheduled Repair -Mechanical"],
+            "Order Cost": [None],
+            "Order Revenue": [None],
+            "Currency": ["USD"],
+            "GM %": [None],
+            "Days to Inv.": [None],
+            "Category": ["No Group"],
+            "Sub-Orders": [None],
+            "Lead Order": [None],
+            "Run Hours": [None],
+            "Reading Date": ["2020-01-03"],
+        }
+
+        p = tmp_path / "multi_sheet_upload.xlsx"
+        with pd.ExcelWriter(p) as writer:
+            pd.DataFrame({"Intro": ["not a data export"]}).to_excel(
+                writer, sheet_name="Cover", index=False
+            )
+            pd.DataFrame(data).to_excel(writer, sheet_name="Export", index=False)
+
+        with open(p, "rb") as fh:
+            r = client.post(
+                "/api/ingestion/upload",
+                files={"file": ("multi_sheet_upload.xlsx", fh, "application/octet-stream")},
+            )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "completed", body
+        assert body["records_imported"] >= 1

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import {
   api,
   type TechnicianListItem,
@@ -21,6 +21,7 @@ export default function MyWorkPage() {
   const [detail, setDetail] = useState<WorkOrderDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [stepBusy, setStepBusy] = useState<string | null>(null);
+  const detailLoadGen = useRef(0);
 
   useEffect(() => {
     api.technicians.list().then((list) => {
@@ -69,22 +70,19 @@ export default function MyWorkPage() {
       setDetail(null);
       return;
     }
-    let cancelled = false;
+    const gen = ++detailLoadGen.current;
     setDetailLoading(true);
     api.workOrders
       .get(selectedId)
       .then((d) => {
-        if (!cancelled) setDetail(d);
+        if (gen === detailLoadGen.current) setDetail(d);
       })
       .catch(() => {
-        if (!cancelled) setDetail(null);
+        if (gen === detailLoadGen.current) setDetail(null);
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (gen === detailLoadGen.current) setDetailLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, [selectedId]);
 
   const toggleStep = async (stepId: string, next: boolean) => {

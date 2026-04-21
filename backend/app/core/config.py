@@ -47,6 +47,14 @@ class Settings(BaseSettings):
             "http://127.0.0.1:3001",
         ],
     )
+    # Dev: any loopback port + common LAN IPs (so Network URL from `next dev` works)
+    CORS_ORIGIN_REGEX: str = (
+        r"https?://("
+        r"localhost|127\.0\.0\.1|"
+        r"192\.168\.\d{1,3}\.\d{1,3}|"
+        r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+        r")(:\d+)?$"
+    )
 
     # Optional API key — when non-empty, mutating endpoints require X-API-Key or Bearer token
     API_KEY: str = ""

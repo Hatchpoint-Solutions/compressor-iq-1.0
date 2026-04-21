@@ -47,6 +47,9 @@ frontend/.env.local
 *.db
 *.sqlite3
 
-# Spreadsheets / sample datasets (keep local only)
-*.xlsx
-*.xls
+# Proprietary source exports (never commit)
+*Maintenance History*.xlsx
+*Maintenance History*.xls
+*Maintenance History*.csv
+*Maintenance History*.tsv
+*Enerflex*.xlsx

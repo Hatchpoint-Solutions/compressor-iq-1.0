@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { api, type RecommendationListItem } from "@/lib/api";
 
@@ -49,28 +49,26 @@ export default function WorkflowIndexPage() {
   >([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const loadGen = useRef(0);
 
   useEffect(() => {
-    let cancelled = false;
+    const gen = ++loadGen.current;
     setLoading(true);
     setError(null);
     api.recommendations
       .list(50)
       .then((items) => {
-        if (!cancelled) setRecommendations(items);
+        if (gen === loadGen.current) setRecommendations(items);
       })
       .catch((err: unknown) => {
-        if (!cancelled)
+        if (gen === loadGen.current)
           setError(
             err instanceof Error ? err.message : "Failed to load recommendations."
           );
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (gen === loadGen.current) setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   return (
